@@ -6,6 +6,7 @@
 
 require_once 'config.php';
 require_once 'functions.php';
+require_once 'access_control.php';
 
 require_admin();
 

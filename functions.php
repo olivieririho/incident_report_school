@@ -76,7 +76,7 @@ class User {
     }
     
     public function get_user_by_id($id) {
-        $stmt = $this->db->query("SELECT id, full_name, email, role, created_at FROM users WHERE id = ?", [$id]);
+        $stmt = $this->db->query("SELECT id, full_name, email, role, email_notifications, desktop_notifications, created_at FROM users WHERE id = ?", [$id]);
         return $stmt->fetch();
     }
     
@@ -199,6 +199,14 @@ class User {
             return ['success' => false, 'message' => 'Failed to update notification settings'];
         }
     }
+    
+    public function get_users_by_role($role) {
+        $stmt = $this->db->query(
+            "SELECT id, full_name, email, role, created_at FROM users WHERE role = ? ORDER BY full_name",
+            [$role]
+        );
+        return $stmt->fetchAll();
+    }
 }
 
 // Incident management functions
@@ -275,35 +283,45 @@ class Incident {
         return $stmt->fetchAll();
     }
     
-    public function get_all_incidents($filters = []) {
-        $sql = "SELECT i.*, u.full_name as reporter_name, a.full_name as assigned_name 
-                FROM incidents i 
-                LEFT JOIN users u ON i.user_id = u.id 
-                LEFT JOIN users a ON i.assigned_to = a.id 
-                WHERE 1=1";
+    public function get_all_incidents($limit = null, $offset = null) {
+        $sql = "SELECT i.*, u.full_name as reporter_name, u.email as reporter_email, 
+                       assigned.full_name as assigned_name, assigned.email as assigned_email
+                FROM incidents i
+                LEFT JOIN users u ON i.user_id = u.id
+                LEFT JOIN users assigned ON i.assigned_to = assigned.id
+                ORDER BY i.created_at DESC";
+        
         $params = [];
         
-        if (!empty($filters['status'])) {
-            $sql .= " AND i.status = ?";
-            $params[] = $filters['status'];
+        if ($limit) {
+            $sql .= " LIMIT ?";
+            $params[] = $limit;
         }
         
-        if (!empty($filters['priority'])) {
-            $sql .= " AND i.priority = ?";
-            $params[] = $filters['priority'];
+        if ($offset) {
+            $sql .= " OFFSET ?";
+            $params[] = $offset;
         }
-        
-        if (!empty($filters['category'])) {
-            $sql .= " AND i.category = ?";
-            $params[] = $filters['category'];
-        }
-        
-        $sql .= " ORDER BY i.created_at DESC";
         
         $stmt = $this->db->query($sql, $params);
         return $stmt->fetchAll();
     }
     
+    public function get_user_incidents($user_id) {
+        $stmt = $this->db->query(
+            "SELECT i.*, u.full_name as reporter_name, u.email as reporter_email, 
+                    assigned.full_name as assigned_name, assigned.email as assigned_email
+             FROM incidents i
+             LEFT JOIN users u ON i.user_id = u.id
+             LEFT JOIN users assigned ON i.assigned_to = assigned.id
+             WHERE i.user_id = ? OR i.user_id IS NULL
+             ORDER BY i.created_at DESC",
+            [$user_id]
+        );
+        return $stmt->fetchAll();
+    }
+    
+        
     public function update_incident_status($incident_id, $status, $updated_by, $note = '') {
         try {
             $this->db->query(
@@ -317,7 +335,13 @@ class Incident {
             // Create notification
             $incident = $this->get_incident_by_id($incident_id);
             if ($incident && !$incident['anonymous'] && $incident['user_id']) {
-                $this->create_notification($incident['user_id'], "Your incident status has been updated to: $status", $incident_id);
+                $message = "Your incident status has been updated to: " . str_replace('_', ' ', $status);
+                $this->create_notification($incident['user_id'], $message, $incident_id);
+                
+                // Send email notification if status is resolved and user has email notifications enabled
+                if ($status === 'resolved' || $status === 'closed') {
+                    $this->send_resolution_email($incident, $status);
+                }
             }
             
             return ['success' => true];
@@ -327,23 +351,49 @@ class Incident {
         }
     }
     
-    public function assign_incident($incident_id, $assigned_to) {
+    public function assign_incident($incident_id, $assigned_to, $assigned_by = null) {
         try {
+            // Get incident details first
+            $incident = $this->get_incident_by_id($incident_id);
+            if (!$incident) {
+                return ['success' => false, 'message' => 'Incident not found'];
+            }
+            
+            // Get staff details
+            $user = new User();
+            $staff = $user->get_user_by_id($assigned_to);
+            if (!$staff) {
+                return ['success' => false, 'message' => 'Staff member not found'];
+            }
+            
+            // Update the incident
             $this->db->query(
                 "UPDATE incidents SET assigned_to = ?, status = 'under_review', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 [$assigned_to, $incident_id]
             );
             
-            // Create notification for assigned user
-            $user = (new User())->get_user_by_id($assigned_to);
-            if ($user) {
-                $this->create_notification($assigned_to, "You have been assigned a new incident", $incident_id);
-            }
+            // Add incident update record for tracking
+            $assigned_by = $assigned_by ?? $_SESSION['user_id'] ?? null;
+            $note = "Assigned to {$staff['full_name']} ({$staff['email']})";
+            $this->add_incident_update($incident_id, $assigned_by, $note, 'under_review');
             
-            return ['success' => true];
+            // Create notification for assigned staff
+            $this->create_notification($assigned_to, "You have been assigned a new incident: {$incident['title']}", $incident_id);
+            
+            // Send email notification to staff
+            $this->send_assignment_email($incident, $staff);
+            
+            error_log("Incident #$incident_id successfully assigned to staff #$assigned_to ({$staff['email']})");
+            
+            return [
+                'success' => true, 
+                'message' => "Incident assigned to {$staff['full_name']} successfully",
+                'staff_name' => $staff['full_name'],
+                'staff_email' => $staff['email']
+            ];
         } catch (Exception $e) {
-            error_log("Error assigning incident: " . $e->getMessage());
-            return ['success' => false];
+            error_log("Error assigning incident #$incident_id: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Database error: ' . $e->getMessage()];
         }
     }
     
@@ -382,6 +432,251 @@ class Incident {
         
         foreach ($admins as $admin) {
             $this->create_notification($admin['id'], $message, $incident_id);
+        }
+    }
+    
+    /**
+     * Send email notification when staff is assigned to an incident
+     */
+    private function send_assignment_email($incident, $staff) {
+        try {
+            if (empty($staff['email'])) {
+                error_log("Cannot send assignment email - staff email not found");
+                return false;
+            }
+            
+            // Prepare email content
+            $to = $staff['email'];
+            $subject = "New Incident Assigned to You - SecureSchool";
+            
+            $incident_ref = "INC-" . str_pad($incident['id'], 6, '0', STR_PAD_LEFT);
+            $priority_badge = ucfirst($incident['priority'] ?? 'medium');
+            $priority_color = [
+                'low' => '#28a745',
+                'medium' => '#ffc107',
+                'high' => '#fd7e14',
+                'critical' => '#dc3545'
+            ][$incident['priority']] ?? '#6c757d';
+            
+            $message = "<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; }
+        .container { max-width: 600px; margin: 0 auto; background: #fff; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }
+        .header h2 { margin: 0; font-size: 24px; }
+        .content { padding: 30px; background: #f9f9f9; }
+        .content h3 { color: #333; margin-top: 0; }
+        .incident-box { background: white; padding: 20px; margin: 20px 0; border-left: 4px solid #667eea; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .incident-box h4 { margin-top: 0; color: #667eea; }
+        .detail-row { margin: 10px 0; }
+        .detail-label { font-weight: bold; color: #666; display: inline-block; width: 120px; }
+        .priority-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-weight: bold; color: white; background: {$priority_color}; }
+        .btn { display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+        .btn:hover { background: #5a6fd6; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; background: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <div class='header'>
+            <h2>🔒 New Assignment</h2>
+        </div>
+        <div class='content'>
+            <h3>Hello {$staff['full_name']},</h3>
+            <p>You have been assigned a new incident to handle. Please review the details below and take appropriate action.</p>
+            
+            <div class='incident-box'>
+                <h4>📋 Incident Details</h4>
+                <div class='detail-row'>
+                    <span class='detail-label'>Reference:</span> {$incident_ref}
+                </div>
+                <div class='detail-row'>
+                    <span class='detail-label'>Title:</span> " . htmlspecialchars($incident['title']) . "
+                </div>
+                <div class='detail-row'>
+                    <span class='detail-label'>Priority:</span> <span class='priority-badge'>{$priority_badge}</span>
+                </div>
+                <div class='detail-row'>
+                    <span class='detail-label'>Category:</span> " . ucfirst(str_replace('_', ' ', $incident['category'])) . "
+                </div>
+                <div class='detail-row'>
+                    <span class='detail-label'>Reported:</span> " . date('F j, Y g:i A', strtotime($incident['created_at'])) . "
+                </div>
+            </div>
+            
+            <p><strong>Description:</strong></p>
+            <p style='background: white; padding: 15px; border-radius: 4px;'>" . nl2br(htmlspecialchars(substr($incident['description'], 0, 300))) . (strlen($incident['description']) > 300 ? '...' : '') . "</p>
+            
+            <a href='" . APP_URL . "incident_details.php?id={$incident['id']}' class='btn'>View Full Details & Take Action</a>
+        </div>
+        <div class='footer'>
+            <p>This is an automated message from SecureSchool Incident Reporting System.</p>
+            <p>&copy; " . date('Y') . " SecureSchool. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>";
+            
+            // Email headers
+            $headers = "MIME-Version: 1.0" . "\r\n";
+            $headers .= "Content-type: text/html; charset=UTF-8" . "\r\n";
+            $headers .= "From: SecureSchool <noreply@secureschool.edu>" . "\r\n";
+            $headers .= "Reply-To: support@secureschool.edu" . "\r\n";
+            
+            // Send email
+            $mail_sent = mail($to, $subject, $message, $headers);
+            
+            // Log email to database
+            $this->log_email($staff['id'], $to, 'assignment', $subject, $message, $mail_sent ? 'sent' : 'failed', null, $incident['id']);
+            
+            if ($mail_sent) {
+                error_log("Assignment email sent successfully to {$to} for incident #{$incident['id']}");
+                return true;
+            } else {
+                error_log("Failed to send assignment email to {$to} for incident #{$incident['id']}");
+                return false;
+            }
+            
+        } catch (Exception $e) {
+            error_log("Error sending assignment email: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Send email notification when incident is resolved
+     */
+    private function send_resolution_email($incident, $status) {
+        try {
+            // Get user details
+            $user = new User();
+            $user_details = $user->get_user_by_id($incident['user_id']);
+            
+            if (!$user_details || empty($user_details['email'])) {
+                error_log("Cannot send email - user email not found for incident #{$incident['id']}");
+                return false;
+            }
+            
+            // Check if user has email notifications enabled
+            $stmt = $this->db->query(
+                "SELECT email_notifications FROM users WHERE id = ?",
+                [$incident['user_id']]
+            );
+            $user_prefs = $stmt->fetch();
+            
+            // Default to enabled if column doesn't exist or is null
+            $email_enabled = true;
+            if ($user_prefs && isset($user_prefs['email_notifications'])) {
+                $email_enabled = (bool)$user_prefs['email_notifications'];
+            }
+            
+            if (!$email_enabled) {
+                error_log("Email notifications disabled for user {$incident['user_id']}");
+                return false;
+            }
+            
+            // Prepare email content
+            $to = $user_details['email'];
+            $subject = "Your Incident Has Been Resolved - SecureSchool";
+            
+            $incident_ref = "INC-" . str_pad($incident['id'], 6, '0', STR_PAD_LEFT);
+            $status_text = ucfirst(str_replace('_', ' ', $status));
+            
+            $message = "<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+        .btn { display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+        .incident-details { background: white; padding: 15px; margin: 15px 0; border-left: 4px solid #667eea; }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <div class='header'>
+            <h2>🔒 SecureSchool Incident Management</h2>
+        </div>
+        <div class='content'>
+            <h3>Hello {$user_details['full_name']},</h3>
+            
+            <p>We are pleased to inform you that your incident has been <strong>{$status_text}</strong>.</p>
+            
+            <div class='incident-details'>
+                <h4>Incident Details:</h4>
+                <p><strong>Reference:</strong> {$incident_ref}</p>
+                <p><strong>Title:</strong> {$incident['title']}</p>
+                <p><strong>Status:</strong> {$status_text}</p>
+                <p><strong>Date Resolved:</strong> " . date('F j, Y g:i A') . "</p>
+            </div>
+            
+            <p>If you have any questions or need further assistance, please don't hesitate to contact us.</p>
+            
+            <a href='" . APP_URL . "/incident_details.php?id={$incident['id']}' class='btn'>View Incident Details</a>
+        </div>
+        <div class='footer'>
+            <p>This is an automated message from SecureSchool Incident Reporting System.</p>
+            <p>&copy; " . date('Y') . " SecureSchool. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>";
+            
+            // Email headers
+            $headers = "MIME-Version: 1.0" . "\r\n";
+            $headers .= "Content-type: text/html; charset=UTF-8" . "\r\n";
+            $headers .= "From: SecureSchool <noreply@secureschool.edu>" . "\r\n";
+            $headers .= "Reply-To: support@secureschool.edu" . "\r\n";
+            
+            // Send email
+            $mail_sent = mail($to, $subject, $message, $headers);
+            
+            // Log email to database
+            $this->log_email($incident['user_id'], $to, 'resolution', $subject, $message, $mail_sent ? 'sent' : 'failed', null, $incident['id']);
+            
+            if ($mail_sent) {
+                error_log("Resolution email sent successfully to {$to} for incident #{$incident['id']}");
+                return true;
+            } else {
+                error_log("Failed to send resolution email to {$to} for incident #{$incident['id']}");
+                return false;
+            }
+            
+        } catch (Exception $e) {
+            error_log("Error sending resolution email: " . $e->getMessage());
+            // Log failed email
+            $this->log_email($incident['user_id'] ?? null, $to ?? '', 'resolution', $subject ?? '', $message ?? '', 'failed', $e->getMessage(), $incident['id'] ?? null);
+            return false;
+        }
+    }
+    
+    /**
+     * Log email to database
+     */
+    private function log_email($recipient_id, $recipient_email, $template_type, $subject, $content, $status, $error_message = null, $incident_id = null) {
+        try {
+            // Check if email_logs table exists
+            $stmt = $this->db->query("SHOW TABLES LIKE 'email_logs'");
+            if (!$stmt->fetch()) {
+                error_log("Email logging table does not exist");
+                return false;
+            }
+            
+            $this->db->query(
+                "INSERT INTO email_logs (recipient_id, recipient_email, template_type, subject, content, status, error_message, incident_id) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [$recipient_id, $recipient_email, $template_type, $subject, $content, $status, $error_message, $incident_id]
+            );
+            
+            return true;
+        } catch (Exception $e) {
+            error_log("Error logging email: " . $e->getMessage());
+            return false;
         }
     }
     

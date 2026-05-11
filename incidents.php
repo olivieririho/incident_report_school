@@ -1,11 +1,12 @@
 <?php
 /**
  * Secure School Incident Reporting Platform
- * Incidents Management Page
+ * Incidents Listing Page
  */
 
 require_once 'config.php';
 require_once 'functions.php';
+require_once 'access_control.php';
 
 require_login();
 

@@ -1,11 +1,12 @@
 <?php
 /**
  * Secure School Incident Reporting Platform
- * Admin Dashboard with Analytics
+ * Admin Dashboard
  */
 
 require_once 'config.php';
 require_once 'functions.php';
+require_once 'access_control.php';
 
 require_admin();
 
@@ -20,7 +21,7 @@ $notifications = $notification->get_user_notifications($_SESSION['user_id'], 5);
 $unread_count = $notification->get_unread_count($_SESSION['user_id']);
 
 // Get staff users for assignment
-$staff_users = $user->get_all_users('staff');
+$staff_users = $user->get_users_by_role('staff');
 
 // Process filters
 $filters = [];
@@ -164,6 +165,22 @@ $filtered_incidents = $incident->get_all_incidents($filters);
                             </div>
                             <div class="stat-trend">
                                 <span class="text-primary"><i class="fas fa-envelope"></i> Alerts</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-lg-2 col-md-4 col-sm-6 mb-3">
+                        <div class="stat-card info">
+                            <div class="stat-value"><?php echo count($staff_users); ?></div>
+                            <div class="stat-label">Staff Members</div>
+                            <div class="stat-icon">
+                                <i class="fas fa-chalkboard-teacher"></i>
+                            </div>
+                            <div class="stat-trend">
+                                <span class="<?php echo count($staff_users) > 0 ? 'text-success' : 'text-warning' ?>">
+                                    <i class="fas fa-<?php echo count($staff_users) > 0 ? 'check' : 'exclamation-triangle'; ?>"></i>
+                                    <?php echo count($staff_users) > 0 ? 'Available' : 'None'; ?>
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -476,20 +493,34 @@ $filtered_incidents = $incident->get_all_incidents($filters);
                         <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
                         <div class="mb-3">
                             <label for="assignedTo" class="form-label">Assign To</label>
-                            <select class="form-select" id="assignedTo" name="assigned_to" required>
-                                <option value="">Select Staff Member</option>
-                                <?php foreach ($staff_users as $staff): ?>
-                                    <option value="<?php echo $staff['id']; ?>">
-                                        <?php echo htmlspecialchars($staff['full_name']); ?> (<?php echo htmlspecialchars($staff['email']); ?>)
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
+                            <?php if (empty($staff_users)): ?>
+                                <div class="alert alert-warning">
+                                    <i class="fas fa-exclamation-triangle me-2"></i>
+                                    No staff members available. Please add staff users first.
+                                </div>
+                            <?php else: ?>
+                                <select class="form-select" id="assignedTo" name="assigned_to" required>
+                                    <option value="">Select Staff Member</option>
+                                    <?php foreach ($staff_users as $staff): ?>
+                                        <option value="<?php echo $staff['id']; ?>">
+                                            <?php echo htmlspecialchars($staff['full_name']); ?> 
+                                            (<?php echo htmlspecialchars($staff['email']); ?>)
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <div class="form-text text-muted">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    Select a staff member to assign this incident to
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </form>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="saveAssignment">Assign</button>
+                    <button type="button" class="btn btn-primary" id="saveAssignment" <?php echo empty($staff_users) ? 'disabled' : ''; ?>>
+                        <?php echo empty($staff_users) ? 'No Staff Available' : 'Assign'; ?>
+                    </button>
                 </div>
             </div>
         </div>
@@ -722,8 +753,14 @@ $filtered_incidents = $incident->get_all_incidents($filters);
             const formData = new FormData(form);
             
             // Validate form
-            const assignedTo = document.getElementById('assignedTo').value;
+            const assignedToSelect = document.getElementById('assignedTo');
+            const assignedTo = assignedToSelect ? assignedToSelect.value : '';
             const incidentId = document.getElementById('incidentId').value;
+            
+            if (!assignedToSelect) {
+                alert('No staff members available. Please add staff users first.');
+                return;
+            }
             
             if (!assignedTo) {
                 alert('Please select a staff member to assign this incident to.');

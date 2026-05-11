@@ -16,7 +16,7 @@ $notifications = $notification->get_user_notifications($_SESSION['user_id'], 5);
         <button class="btn btn-outline-light d-lg-none me-2 mobile-menu-toggle" id="mobileMenuToggle">
             <i class="fas fa-bars"></i>
         </button>
-        <a class="navbar-brand" href="dashboard.php">
+        <a class="navbar-brand" href="<?php echo is_staff() ? 'staff_dashboard.php' : 'dashboard.php'; ?>">
             <i class="fas fa-shield-alt me-2"></i><?php echo APP_NAME; ?>
         </a>
         <button class="navbar-toggler d-lg-none" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -96,11 +96,6 @@ $notifications = $notification->get_user_notifications($_SESSION['user_id'], 5);
                                 <br><small class="text-muted"><?php echo ucfirst($_SESSION['user_role']); ?></small>
                             </h6></li>
                             <li><hr class="dropdown-divider"></li>
-                            <li>
-                                <a class="dropdown-item" href="report.php">
-                                    <i class="fas fa-plus me-2"></i>Report Incident
-                                </a>
-                            </li>
                             <?php if (is_admin()): ?>
                                 <li>
                                     <a class="dropdown-item" href="users.php">

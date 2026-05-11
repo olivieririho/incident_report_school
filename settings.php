@@ -12,6 +12,16 @@ require_login();
 $user = new User();
 $current_user = $user->get_user_by_id($_SESSION['user_id']);
 
+// Ensure current_user is valid, provide defaults if not
+if (!$current_user || !is_array($current_user)) {
+    $current_user = [
+        'full_name' => $_SESSION['user_name'] ?? '',
+        'email' => $_SESSION['user_email'] ?? '',
+        'role' => $_SESSION['user_role'] ?? 'student',
+        'created_at' => date('Y-m-d H:i:s')
+    ];
+}
+
 $errors = [];
 $success = '';
 
@@ -38,7 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 // Check if email is taken by another user
-                if ($email !== $current_user['email']) {
+                if ($email !== ($current_user['email'] ?? '')) {
                     $existing_user = $user->get_user_by_email($email);
                     if ($existing_user && $existing_user['id'] != $_SESSION['user_id']) {
                         $errors[] = 'Email address is already taken';
@@ -49,7 +59,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $result = $user->update_user_profile($_SESSION['user_id'], $full_name, $email);
                     if ($result['success']) {
                         $success = 'Profile updated successfully!';
+                        // Refresh user data
                         $current_user = $user->get_user_by_id($_SESSION['user_id']);
+                        // Ensure valid user data after refresh
+                        if (!$current_user || !is_array($current_user)) {
+                            $current_user = [
+                                'full_name' => $full_name,
+                                'email' => $email,
+                                'role' => $_SESSION['user_role'] ?? 'student',
+                                'created_at' => date('Y-m-d H:i:s')
+                            ];
+                        }
+                        // Update session data
                         $_SESSION['user_name'] = $full_name;
                         $_SESSION['user_email'] = $email;
                     } else {
@@ -169,24 +190,24 @@ $csrf_token = generate_csrf_token();
                                         <div class="col-md-6 mb-3">
                                             <label for="full_name" class="form-label fw-semibold">Full Name</label>
                                             <input type="text" class="form-control" id="full_name" name="full_name" 
-                                                   value="<?php echo htmlspecialchars($current_user['full_name']); ?>" required>
+                                                   value="<?php echo htmlspecialchars($current_user['full_name'] ?? ''); ?>" required>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label for="email" class="form-label fw-semibold">Email Address</label>
                                             <input type="email" class="form-control" id="email" name="email" 
-                                                   value="<?php echo htmlspecialchars($current_user['email']); ?>" required>
+                                                   value="<?php echo htmlspecialchars($current_user['email'] ?? ''); ?>" required>
                                         </div>
                                     </div>
                                     
                                     <div class="row">
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label fw-semibold">User Role</label>
-                                            <input type="text" class="form-control" value="<?php echo ucfirst($current_user['role']); ?>" readonly>
+                                            <input type="text" class="form-control" value="<?php echo ucfirst($current_user['role'] ?? 'student'); ?>" readonly>
                                             <div class="form-text">Your role cannot be changed</div>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label fw-semibold">Member Since</label>
-                                            <input type="text" class="form-control" value="<?php echo format_date($current_user['created_at']); ?>" readonly>
+                                            <input type="text" class="form-control" value="<?php echo format_date($current_user['created_at'] ?? date('Y-m-d H:i:s')); ?>" readonly>
                                         </div>
                                     </div>
                                     

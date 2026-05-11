@@ -53,7 +53,17 @@ if (!is_admin()) {
     exit();
 }
 
+// Log the assignment attempt for debugging
+error_log("Attempting to assign incident #$incident_id to staff #$assigned_to by admin " . $_SESSION['user_id']);
+
 $result = $incident->assign_incident($incident_id, $assigned_to);
+
+// Log the result
+if ($result['success']) {
+    error_log("Successfully assigned incident #$incident_id to staff #$assigned_to");
+} else {
+    error_log("Failed to assign incident #$incident_id: " . ($result['message'] ?? 'Unknown error'));
+}
 
 header('Content-Type: application/json');
 echo json_encode($result);
